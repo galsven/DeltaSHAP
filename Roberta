@@ -1,0 +1,147 @@
+from sklearn.metrics import f1_score
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    preds = logits.argmax(axis=1)
+
+    f1_macro = f1_score(labels, preds, average="macro")
+
+    return {"f1_macro": f1_macro}
+
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import MultinomialNB
+!pip install catboost
+!pip install shap
+from catboost import CatBoostClassifier
+from sklearn.metrics import classification_report
+import shap
+import seaborn as sns
+import matplotlib.pyplot as plt
+from datasets import load_dataset
+
+import os
+
+# @title
+from huggingface_hub import login
+
+# Paste your token here
+login(token="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")
+
+dataset = load_dataset("ailsntua/QEvasion")
+splits = {'train': 'data/train-00000-of-00001.parquet', 'test': 'data/test-00000-of-00001.parquet'}
+df_train = load_dataset("ailsntua/QEvasion", split="train")
+df_test = load_dataset("ailsntua/QEvasion", split="test")
+
+coloane_train = ['title', 'date', 'president', 'url', 'question_order',
+       'interview_question', 'interview_answer', 'gpt3.5_summary',
+       'gpt3.5_prediction', 'question', 'annotator_id', 'annotator1',
+       'annotator2', 'annotator3', 'inaudible', 'multiple_questions',
+       'affirmative_questions']
+coloane_label = ['clarity_label']
+
+df_train = pd.DataFrame(df_train)
+df_test = pd.DataFrame(df_test)
+
+
+
+# Assuming 'coloane_train' and 'coloane_label' are defined elsewhere in the notebook
+# Combine text columns into a single string for each row
+train_texts_combined = df_train[coloane_train].fillna("").astype(str).agg(' '.join, axis=1)
+test_texts_combined = df_test[coloane_train].fillna("").astype(str).agg(' '.join, axis=1)
+
+print(np.unique(df_train[coloane_label], return_counts=True))
+print(np.unique(df_test[coloane_label], return_counts=True))
+
+print(df_train[coloane_label].value_counts())
+print(df_train[coloane_label].isna().sum())
+
+from sklearn.preprocessing import LabelEncoder
+# encoding corect
+le = LabelEncoder()
+le.fit(df_train[coloane_label])
+
+train_labels = le.transform(df_train[coloane_label])
+test_labels = le.transform(df_test[coloane_label])
+
+print(np.unique(train_labels, return_counts=True))
+print(np.unique(test_labels, return_counts=True))
+
+## return train_texts_combined, test_texts_combined train_labels test_labels
+
+X_train = train_texts_combined
+X_test = test_texts_combined
+y_train = train_labels
+y_test = test_labels
+
+
+X_train.shape, y_train.shape
+
+np.unique(y_train, return_counts=True)
+
+from transformers import RobertaTokenizer, RobertaForSequenceClassification
+
+# Load tokenizer + model
+tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+model = RobertaForSequenceClassification.from_pretrained("roberta-base", num_labels=3)
+
+
+
+
+
+
+
+def tokenize(batch):
+    return tokenizer(batch, padding=True, truncation=True, max_length=128)
+
+from datasets import Dataset
+
+train_dataset = Dataset.from_dict({
+    "text": X_train,
+    "label": y_train
+})
+
+test_dataset = Dataset.from_dict({
+    "text": X_test,
+    "label": y_test
+})
+
+train_dataset = train_dataset.map(lambda x: tokenize(x["text"]), batched=True)
+test_dataset = test_dataset.map(lambda x: tokenize(x["text"]), batched=True)
+
+train_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'label'])
+test_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'label'])
+
+from transformers import Trainer, TrainingArguments
+
+training_args = TrainingArguments(
+    output_dir='./results',
+    eval_strategy="epoch",
+    learning_rate=2e-5,
+    per_device_train_batch_size=8,
+    per_device_eval_batch_size=8,
+    num_train_epochs=4,
+    optim="adafactor"
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=test_dataset,
+    compute_metrics=compute_metrics
+)
+
+trainer.train()
+
+trainer.evaluate()
+
+predictions = trainer.predict(test_dataset)
+
+predictions
+
